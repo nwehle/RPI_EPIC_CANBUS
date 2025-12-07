@@ -8,6 +8,7 @@
 #define NMEA_PARSER_H
 
 #include <cstdint>
+#include <cstddef>
 
 // GPS data structure
 struct GPSData {
