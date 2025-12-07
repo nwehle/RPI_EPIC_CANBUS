@@ -1,5 +1,5 @@
 /*
- * GPIO Interface for Raspberry Pi using libgpiod
+ * GPIO Interface for Raspberry Pi using libgpiod v2
  * Handles digital inputs, outputs, VSS, and PWM
  * Supports dynamic pin configuration
  */
@@ -64,11 +64,17 @@ public:
 private:
     struct gpiod_chip* chip_;
 
-    // Line handles (dynamically sized)
-    std::vector<struct gpiod_line*> digitalInputLines_;
-    std::vector<struct gpiod_line*> digitalOutputLines_;
-    std::vector<struct gpiod_line*> vssInputLines_;
-    std::vector<struct gpiod_line*> pwmOutputLines_;
+    // libgpiod v2 uses line requests instead of individual lines
+    struct gpiod_line_request* digitalInputRequest_;
+    struct gpiod_line_request* digitalOutputRequest_;
+    struct gpiod_line_request* vssInputRequest_;
+    struct gpiod_line_request* pwmOutputRequest_;
+
+    // Pin offset arrays
+    std::vector<unsigned int> digitalInputOffsets_;
+    std::vector<unsigned int> digitalOutputOffsets_;
+    std::vector<unsigned int> vssInputOffsets_;
+    std::vector<unsigned int> pwmOutputOffsets_;
 
     // Pin counts
     int numDigitalInputs_;
@@ -81,6 +87,7 @@ private:
     std::vector<int> vssLastState_;
 
     bool configured_;
+    std::string chipPath_;
 };
 
 #endif // GPIO_INTERFACE_H

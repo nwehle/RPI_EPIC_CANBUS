@@ -1,5 +1,5 @@
 /*
- * GPIO Interface Implementation using libgpiod
+ * GPIO Interface Implementation using libgpiod v2
  * Supports dynamic pin configuration
  */
 
@@ -9,6 +9,10 @@
 
 GPIOInterface::GPIOInterface()
     : chip_(nullptr)
+    , digitalInputRequest_(nullptr)
+    , digitalOutputRequest_(nullptr)
+    , vssInputRequest_(nullptr)
+    , pwmOutputRequest_(nullptr)
     , numDigitalInputs_(0)
     , numDigitalOutputs_(0)
     , numVssInputs_(0)
@@ -21,6 +25,7 @@ GPIOInterface::~GPIOInterface() {
 }
 
 bool GPIOInterface::init(const std::string& chipPath) {
+    chipPath_ = chipPath;
     chip_ = gpiod_chip_open(chipPath.c_str());
     if (!chip_) {
         std::fprintf(stderr, "Failed to open GPIO chip '%s'\n", chipPath.c_str());
@@ -34,33 +39,73 @@ bool GPIOInterface::init(const std::string& chipPath) {
 bool GPIOInterface::configureDigitalInputs(const std::vector<int>& pins) {
     if (!chip_) return false;
 
-    // Release any existing lines
-    for (auto& line : digitalInputLines_) {
-        if (line) {
-            gpiod_line_release(line);
+    // Release any existing request
+    if (digitalInputRequest_) {
+        gpiod_line_request_release(digitalInputRequest_);
+        digitalInputRequest_ = nullptr;
+    }
+    digitalInputOffsets_.clear();
+    numDigitalInputs_ = 0;
+
+    if (pins.empty()) return true;
+
+    // Build offsets array
+    for (int gpio : pins) {
+        if (gpio >= 0 && numDigitalInputs_ < MAX_DIGITAL_INPUTS) {
+            digitalInputOffsets_.push_back(static_cast<unsigned int>(gpio));
+            numDigitalInputs_++;
         }
     }
-    digitalInputLines_.clear();
 
-    numDigitalInputs_ = 0;
-    for (int gpio : pins) {
-        if (gpio < 0) continue;
-        if (numDigitalInputs_ >= MAX_DIGITAL_INPUTS) break;
+    if (digitalInputOffsets_.empty()) return true;
 
-        struct gpiod_line* line = gpiod_chip_get_line(chip_, gpio);
-        if (line) {
-            if (gpiod_line_request_input_flags(line, "epic_din",
-                    GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0) {
-                std::fprintf(stderr, "Failed to configure digital input GPIO %d\n", gpio);
-                digitalInputLines_.push_back(nullptr);
-            } else {
-                digitalInputLines_.push_back(line);
-                std::printf("  Digital input %d: GPIO %d\n", numDigitalInputs_, gpio);
-            }
-        } else {
-            digitalInputLines_.push_back(nullptr);
-        }
-        numDigitalInputs_++;
+    // Create line settings for input with pull-up
+    struct gpiod_line_settings* settings = gpiod_line_settings_new();
+    if (!settings) {
+        std::fprintf(stderr, "Failed to create line settings\n");
+        return false;
+    }
+
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+    gpiod_line_settings_set_bias(settings, GPIOD_LINE_BIAS_PULL_UP);
+
+    // Create line config
+    struct gpiod_line_config* lineConfig = gpiod_line_config_new();
+    if (!lineConfig) {
+        gpiod_line_settings_free(settings);
+        std::fprintf(stderr, "Failed to create line config\n");
+        return false;
+    }
+
+    int ret = gpiod_line_config_add_line_settings(lineConfig,
+        digitalInputOffsets_.data(), digitalInputOffsets_.size(), settings);
+    gpiod_line_settings_free(settings);
+
+    if (ret < 0) {
+        gpiod_line_config_free(lineConfig);
+        std::fprintf(stderr, "Failed to add line settings\n");
+        return false;
+    }
+
+    // Create request config
+    struct gpiod_request_config* reqConfig = gpiod_request_config_new();
+    if (reqConfig) {
+        gpiod_request_config_set_consumer(reqConfig, "epic_din");
+    }
+
+    // Request the lines
+    digitalInputRequest_ = gpiod_chip_request_lines(chip_, reqConfig, lineConfig);
+
+    if (reqConfig) gpiod_request_config_free(reqConfig);
+    gpiod_line_config_free(lineConfig);
+
+    if (!digitalInputRequest_) {
+        std::fprintf(stderr, "Failed to request digital input lines\n");
+        return false;
+    }
+
+    for (size_t i = 0; i < digitalInputOffsets_.size(); ++i) {
+        std::printf("  Digital input %zu: GPIO %u\n", i, digitalInputOffsets_[i]);
     }
 
     configured_ = true;
@@ -70,32 +115,63 @@ bool GPIOInterface::configureDigitalInputs(const std::vector<int>& pins) {
 bool GPIOInterface::configureDigitalOutputs(const std::vector<int>& pins) {
     if (!chip_) return false;
 
-    // Release any existing lines
-    for (auto& line : digitalOutputLines_) {
-        if (line) {
-            gpiod_line_release(line);
+    // Release any existing request
+    if (digitalOutputRequest_) {
+        gpiod_line_request_release(digitalOutputRequest_);
+        digitalOutputRequest_ = nullptr;
+    }
+    digitalOutputOffsets_.clear();
+    numDigitalOutputs_ = 0;
+
+    if (pins.empty()) return true;
+
+    // Build offsets array
+    for (int gpio : pins) {
+        if (gpio >= 0 && numDigitalOutputs_ < MAX_DIGITAL_OUTPUTS) {
+            digitalOutputOffsets_.push_back(static_cast<unsigned int>(gpio));
+            numDigitalOutputs_++;
         }
     }
-    digitalOutputLines_.clear();
 
-    numDigitalOutputs_ = 0;
-    for (int gpio : pins) {
-        if (gpio < 0) continue;
-        if (numDigitalOutputs_ >= MAX_DIGITAL_OUTPUTS) break;
+    if (digitalOutputOffsets_.empty()) return true;
 
-        struct gpiod_line* line = gpiod_chip_get_line(chip_, gpio);
-        if (line) {
-            if (gpiod_line_request_output(line, "epic_dout", 0) < 0) {
-                std::fprintf(stderr, "Failed to configure digital output GPIO %d\n", gpio);
-                digitalOutputLines_.push_back(nullptr);
-            } else {
-                digitalOutputLines_.push_back(line);
-                std::printf("  Digital output %d: GPIO %d\n", numDigitalOutputs_, gpio);
-            }
-        } else {
-            digitalOutputLines_.push_back(nullptr);
-        }
-        numDigitalOutputs_++;
+    // Create line settings for output
+    struct gpiod_line_settings* settings = gpiod_line_settings_new();
+    if (!settings) return false;
+
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT);
+    gpiod_line_settings_set_output_value(settings, GPIOD_LINE_VALUE_INACTIVE);
+
+    // Create line config
+    struct gpiod_line_config* lineConfig = gpiod_line_config_new();
+    if (!lineConfig) {
+        gpiod_line_settings_free(settings);
+        return false;
+    }
+
+    gpiod_line_config_add_line_settings(lineConfig,
+        digitalOutputOffsets_.data(), digitalOutputOffsets_.size(), settings);
+    gpiod_line_settings_free(settings);
+
+    // Create request config
+    struct gpiod_request_config* reqConfig = gpiod_request_config_new();
+    if (reqConfig) {
+        gpiod_request_config_set_consumer(reqConfig, "epic_dout");
+    }
+
+    // Request the lines
+    digitalOutputRequest_ = gpiod_chip_request_lines(chip_, reqConfig, lineConfig);
+
+    if (reqConfig) gpiod_request_config_free(reqConfig);
+    gpiod_line_config_free(lineConfig);
+
+    if (!digitalOutputRequest_) {
+        std::fprintf(stderr, "Failed to request digital output lines\n");
+        return false;
+    }
+
+    for (size_t i = 0; i < digitalOutputOffsets_.size(); ++i) {
+        std::printf("  Digital output %zu: GPIO %u\n", i, digitalOutputOffsets_[i]);
     }
 
     return true;
@@ -104,37 +180,67 @@ bool GPIOInterface::configureDigitalOutputs(const std::vector<int>& pins) {
 bool GPIOInterface::configureVssInputs(const std::vector<int>& pins) {
     if (!chip_) return false;
 
-    // Release any existing lines
-    for (auto& line : vssInputLines_) {
-        if (line) {
-            gpiod_line_release(line);
-        }
+    // Release any existing request
+    if (vssInputRequest_) {
+        gpiod_line_request_release(vssInputRequest_);
+        vssInputRequest_ = nullptr;
     }
-    vssInputLines_.clear();
+    vssInputOffsets_.clear();
     vssEdgeCounts_.clear();
     vssLastState_.clear();
-
     numVssInputs_ = 0;
-    for (int gpio : pins) {
-        if (gpio < 0) continue;
-        if (numVssInputs_ >= MAX_VSS_INPUTS) break;
 
-        struct gpiod_line* line = gpiod_chip_get_line(chip_, gpio);
-        if (line) {
-            if (gpiod_line_request_input_flags(line, "epic_vss",
-                    GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0) {
-                std::fprintf(stderr, "Failed to configure VSS input GPIO %d\n", gpio);
-                vssInputLines_.push_back(nullptr);
-            } else {
-                vssInputLines_.push_back(line);
-                std::printf("  VSS input %d: GPIO %d\n", numVssInputs_, gpio);
-            }
-        } else {
-            vssInputLines_.push_back(nullptr);
+    if (pins.empty()) return true;
+
+    // Build offsets array
+    for (int gpio : pins) {
+        if (gpio >= 0 && numVssInputs_ < MAX_VSS_INPUTS) {
+            vssInputOffsets_.push_back(static_cast<unsigned int>(gpio));
+            vssEdgeCounts_.push_back(0);
+            vssLastState_.push_back(1);  // Assume HIGH initially
+            numVssInputs_++;
         }
-        vssEdgeCounts_.push_back(0);
-        vssLastState_.push_back(1);  // Assume HIGH initially
-        numVssInputs_++;
+    }
+
+    if (vssInputOffsets_.empty()) return true;
+
+    // Create line settings for input with pull-up
+    struct gpiod_line_settings* settings = gpiod_line_settings_new();
+    if (!settings) return false;
+
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+    gpiod_line_settings_set_bias(settings, GPIOD_LINE_BIAS_PULL_UP);
+
+    // Create line config
+    struct gpiod_line_config* lineConfig = gpiod_line_config_new();
+    if (!lineConfig) {
+        gpiod_line_settings_free(settings);
+        return false;
+    }
+
+    gpiod_line_config_add_line_settings(lineConfig,
+        vssInputOffsets_.data(), vssInputOffsets_.size(), settings);
+    gpiod_line_settings_free(settings);
+
+    // Create request config
+    struct gpiod_request_config* reqConfig = gpiod_request_config_new();
+    if (reqConfig) {
+        gpiod_request_config_set_consumer(reqConfig, "epic_vss");
+    }
+
+    // Request the lines
+    vssInputRequest_ = gpiod_chip_request_lines(chip_, reqConfig, lineConfig);
+
+    if (reqConfig) gpiod_request_config_free(reqConfig);
+    gpiod_line_config_free(lineConfig);
+
+    if (!vssInputRequest_) {
+        std::fprintf(stderr, "Failed to request VSS input lines\n");
+        return false;
+    }
+
+    for (size_t i = 0; i < vssInputOffsets_.size(); ++i) {
+        std::printf("  VSS input %zu: GPIO %u\n", i, vssInputOffsets_[i]);
     }
 
     return true;
@@ -143,70 +249,90 @@ bool GPIOInterface::configureVssInputs(const std::vector<int>& pins) {
 bool GPIOInterface::configurePwmOutputs(const std::vector<int>& pins) {
     if (!chip_) return false;
 
-    // Release any existing lines
-    for (auto& line : pwmOutputLines_) {
-        if (line) {
-            gpiod_line_release(line);
+    // Release any existing request
+    if (pwmOutputRequest_) {
+        gpiod_line_request_release(pwmOutputRequest_);
+        pwmOutputRequest_ = nullptr;
+    }
+    pwmOutputOffsets_.clear();
+    numPwmOutputs_ = 0;
+
+    if (pins.empty()) return true;
+
+    // Build offsets array
+    for (int gpio : pins) {
+        if (gpio >= 0 && numPwmOutputs_ < MAX_PWM_OUTPUTS) {
+            pwmOutputOffsets_.push_back(static_cast<unsigned int>(gpio));
+            numPwmOutputs_++;
         }
     }
-    pwmOutputLines_.clear();
 
-    numPwmOutputs_ = 0;
-    for (int gpio : pins) {
-        if (gpio < 0) continue;
-        if (numPwmOutputs_ >= MAX_PWM_OUTPUTS) break;
+    if (pwmOutputOffsets_.empty()) return true;
 
-        struct gpiod_line* line = gpiod_chip_get_line(chip_, gpio);
-        if (line) {
-            if (gpiod_line_request_output(line, "epic_pwm", 0) < 0) {
-                std::fprintf(stderr, "Failed to configure PWM output GPIO %d\n", gpio);
-                pwmOutputLines_.push_back(nullptr);
-            } else {
-                pwmOutputLines_.push_back(line);
-                std::printf("  PWM output %d: GPIO %d\n", numPwmOutputs_, gpio);
-            }
-        } else {
-            pwmOutputLines_.push_back(nullptr);
-        }
-        numPwmOutputs_++;
+    // Create line settings for output
+    struct gpiod_line_settings* settings = gpiod_line_settings_new();
+    if (!settings) return false;
+
+    gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT);
+    gpiod_line_settings_set_output_value(settings, GPIOD_LINE_VALUE_INACTIVE);
+
+    // Create line config
+    struct gpiod_line_config* lineConfig = gpiod_line_config_new();
+    if (!lineConfig) {
+        gpiod_line_settings_free(settings);
+        return false;
+    }
+
+    gpiod_line_config_add_line_settings(lineConfig,
+        pwmOutputOffsets_.data(), pwmOutputOffsets_.size(), settings);
+    gpiod_line_settings_free(settings);
+
+    // Create request config
+    struct gpiod_request_config* reqConfig = gpiod_request_config_new();
+    if (reqConfig) {
+        gpiod_request_config_set_consumer(reqConfig, "epic_pwm");
+    }
+
+    // Request the lines
+    pwmOutputRequest_ = gpiod_chip_request_lines(chip_, reqConfig, lineConfig);
+
+    if (reqConfig) gpiod_request_config_free(reqConfig);
+    gpiod_line_config_free(lineConfig);
+
+    if (!pwmOutputRequest_) {
+        std::fprintf(stderr, "Failed to request PWM output lines\n");
+        return false;
+    }
+
+    for (size_t i = 0; i < pwmOutputOffsets_.size(); ++i) {
+        std::printf("  PWM output %zu: GPIO %u\n", i, pwmOutputOffsets_[i]);
     }
 
     return true;
 }
 
 void GPIOInterface::close() {
-    // Release all lines
-    for (auto& line : digitalInputLines_) {
-        if (line) {
-            gpiod_line_release(line);
-            line = nullptr;
-        }
+    if (digitalInputRequest_) {
+        gpiod_line_request_release(digitalInputRequest_);
+        digitalInputRequest_ = nullptr;
     }
-    digitalInputLines_.clear();
+    if (digitalOutputRequest_) {
+        gpiod_line_request_release(digitalOutputRequest_);
+        digitalOutputRequest_ = nullptr;
+    }
+    if (vssInputRequest_) {
+        gpiod_line_request_release(vssInputRequest_);
+        vssInputRequest_ = nullptr;
+    }
+    if (pwmOutputRequest_) {
+        gpiod_line_request_release(pwmOutputRequest_);
+        pwmOutputRequest_ = nullptr;
+    }
 
-    for (auto& line : digitalOutputLines_) {
-        if (line) {
-            gpiod_line_release(line);
-            line = nullptr;
-        }
-    }
-    digitalOutputLines_.clear();
-
-    for (auto& line : pwmOutputLines_) {
-        if (line) {
-            gpiod_line_release(line);
-            line = nullptr;
-        }
-    }
-    pwmOutputLines_.clear();
-
-    for (auto& line : vssInputLines_) {
-        if (line) {
-            gpiod_line_release(line);
-            line = nullptr;
-        }
-    }
-    vssInputLines_.clear();
+    digitalInputOffsets_.clear();
+    digitalOutputOffsets_.clear();
+    vssInputOffsets_.clear();
+    pwmOutputOffsets_.clear();
 
     if (chip_) {
         gpiod_chip_close(chip_);
@@ -221,62 +347,68 @@ void GPIOInterface::close() {
 }
 
 uint16_t GPIOInterface::readDigitalInputs() {
-    if (!configured_) return 0;
+    if (!digitalInputRequest_ || digitalInputOffsets_.empty()) return 0;
 
     uint16_t bits = 0;
+
+    // Read all values at once
+    enum gpiod_line_value values[MAX_DIGITAL_INPUTS];
+    int ret = gpiod_line_request_get_values(digitalInputRequest_, values);
+
+    if (ret < 0) return 0;
+
     for (int i = 0; i < numDigitalInputs_ && i < 16; ++i) {
-        if (i < static_cast<int>(digitalInputLines_.size()) && digitalInputLines_[i]) {
-            int val = gpiod_line_get_value(digitalInputLines_[i]);
-            // Invert: LOW = 1 (grounded button pressed), HIGH = 0
-            if (val == 0) {
-                bits |= (1u << i);
-            }
+        // Invert: LOW = 1 (grounded button pressed), HIGH = 0
+        if (values[i] == GPIOD_LINE_VALUE_INACTIVE) {
+            bits |= (1u << i);
         }
     }
+
     return bits;
 }
 
 void GPIOInterface::setDigitalOutputs(uint16_t bits) {
-    if (!configured_) return;
+    if (!digitalOutputRequest_ || digitalOutputOffsets_.empty()) return;
+
+    enum gpiod_line_value values[MAX_DIGITAL_OUTPUTS];
 
     for (int i = 0; i < numDigitalOutputs_ && i < 16; ++i) {
-        if (i < static_cast<int>(digitalOutputLines_.size()) && digitalOutputLines_[i]) {
-            int value = (bits & (1u << i)) ? 1 : 0;
-            gpiod_line_set_value(digitalOutputLines_[i], value);
-        }
+        values[i] = (bits & (1u << i)) ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE;
     }
+
+    gpiod_line_request_set_values(digitalOutputRequest_, values);
 }
 
 void GPIOInterface::setPwmOutputs(uint16_t bits) {
-    if (!configured_) return;
+    if (!pwmOutputRequest_ || pwmOutputOffsets_.empty()) return;
+
+    enum gpiod_line_value values[MAX_PWM_OUTPUTS];
 
     for (int i = 0; i < numPwmOutputs_ && i < 16; ++i) {
-        if (i < static_cast<int>(pwmOutputLines_.size()) && pwmOutputLines_[i]) {
-            int value = (bits & (1u << i)) ? 1 : 0;
-            gpiod_line_set_value(pwmOutputLines_[i], value);
-        }
+        values[i] = (bits & (1u << i)) ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE;
     }
+
+    gpiod_line_request_set_values(pwmOutputRequest_, values);
 }
 
 void GPIOInterface::pollVSS() {
-    if (!configured_) return;
+    if (!vssInputRequest_ || vssInputOffsets_.empty()) return;
 
-    // Poll each VSS input and detect falling edges
+    enum gpiod_line_value values[MAX_VSS_INPUTS];
+    int ret = gpiod_line_request_get_values(vssInputRequest_, values);
+
+    if (ret < 0) return;
+
+    // Detect falling edges
     for (int i = 0; i < numVssInputs_; ++i) {
-        if (i < static_cast<int>(vssInputLines_.size()) && vssInputLines_[i]) {
-            int currentState = gpiod_line_get_value(vssInputLines_[i]);
-            // Detect falling edge (HIGH -> LOW)
-            if (i < static_cast<int>(vssLastState_.size()) &&
-                vssLastState_[i] == 1 && currentState == 0) {
-                if (i < static_cast<int>(vssEdgeCounts_.size()) &&
-                    vssEdgeCounts_[i] < 0xFFFFFFFE) {
-                    vssEdgeCounts_[i]++;
-                }
-            }
-            if (i < static_cast<int>(vssLastState_.size())) {
-                vssLastState_[i] = currentState;
+        int currentState = (values[i] == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
+        // Detect falling edge (HIGH -> LOW)
+        if (vssLastState_[i] == 1 && currentState == 0) {
+            if (vssEdgeCounts_[i] < 0xFFFFFFFE) {
+                vssEdgeCounts_[i]++;
             }
         }
+        vssLastState_[i] = currentState;
     }
 }
 
@@ -284,10 +416,6 @@ void GPIOInterface::getVSSCounts(uint32_t* counts) {
     if (!counts) return;
 
     for (int i = 0; i < numVssInputs_ && i < MAX_VSS_INPUTS; ++i) {
-        if (i < static_cast<int>(vssEdgeCounts_.size())) {
-            counts[i] = vssEdgeCounts_[i];
-        } else {
-            counts[i] = 0;
-        }
+        counts[i] = vssEdgeCounts_[i];
     }
 }
