@@ -1,0 +1,15 @@
+[Unit]
+Description=RPI EPIC CAN Bus I/O Expander for epicEFI
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/ip link set can0 type can bitrate 500000
+ExecStartPre=/sbin/ip link set can0 up
+ExecStart=/usr/local/bin/rpi_epic_canbus -c can0 -g /dev/ttyUSB0
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

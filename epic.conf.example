@@ -1,0 +1,58 @@
+# RPI_EPIC_CANBUS Configuration File
+# ===================================
+#
+# This file configures the GPIO pin assignments and device paths
+# for the Raspberry Pi EPIC CAN bus I/O expander.
+
+# ============== Device Paths ==============
+
+can_interface = can0
+gps_device = /dev/ttyUSB0
+i2c_device = /dev/i2c-1
+gpio_chip = /dev/gpiochip4
+gps_baud = 9600
+
+# ============== I/O Mode ==============
+# Choose one of:
+#   inputs_only  - 16 digital inputs (no outputs or VSS)
+#   balanced     - 8 inputs + 4 outputs + 4 VSS (default)
+#   outputs_focus - 4 inputs + 8 outputs + 4 VSS
+#   custom       - Use the GPIO pin assignments below
+
+io_mode = balanced
+
+# ============== Custom GPIO Pin Assignments ==============
+# Only used when io_mode = custom
+#
+# Available GPIOs (BCM numbering):
+#   4, 5, 6, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 26, 27
+#
+# Reserved GPIOs (do not use):
+#   2, 3   - I2C (SDA, SCL) for ADS1115 ADC
+#   7, 8   - SPI CE0, CE1 for CAN HAT
+#   9, 10, 11 - SPI MISO, MOSI, SCLK for CAN HAT
+#   24, 25 - CAN HAT interrupt pins
+#
+# Roles:
+#   input  - Digital input with pull-up
+#   output - Digital output
+#   vss    - Wheel speed sensor input (edge counting)
+#   pwm    - PWM output (on/off only currently)
+#   unused - Pin not used
+#
+# Format: gpio<number> = <role>, <optional_name>
+#
+# Example custom configuration (uncomment to use):
+# io_mode = custom
+# gpio4 = input, Button1
+# gpio5 = input, Button2
+# gpio6 = input, Switch1
+# gpio12 = input, Switch2
+# gpio13 = output, Relay1
+# gpio14 = output, Relay2
+# gpio15 = output, LED1
+# gpio16 = output, LED2
+# gpio17 = vss, FrontLeft
+# gpio18 = vss, FrontRight
+# gpio19 = vss, RearLeft
+# gpio20 = vss, RearRight
