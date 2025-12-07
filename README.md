@@ -381,4 +381,5 @@ Same as the original MEGA_EPIC_CANBUS project.
 
 ## Author
 
-Ported by Gennady Gurov for the epicEFI project.
+Ported by nwehle for the epicEFI project.
+
