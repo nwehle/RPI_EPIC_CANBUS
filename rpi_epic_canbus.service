@@ -1,12 +1,15 @@
 [Unit]
 Description=RPI EPIC CAN Bus I/O Expander for epicEFI
-After=network.target
+After=network.target systemd-modules-load.service
+Wants=systemd-modules-load.service
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sleep 2
+ExecStartPre=/sbin/ip link set can0 down
 ExecStartPre=/sbin/ip link set can0 type can bitrate 500000
 ExecStartPre=/sbin/ip link set can0 up
-ExecStart=/usr/local/bin/rpi_epic_canbus -c can0 -g /dev/ttyUSB0
+ExecStart=/usr/local/bin/rpi_epic_canbus -c can0 -p /dev/gpiochip10 -f /etc/epic.conf
 Restart=on-failure
 RestartSec=5
 User=root

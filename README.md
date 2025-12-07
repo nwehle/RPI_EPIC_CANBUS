@@ -76,11 +76,18 @@ Add these lines to `/boot/firmware/config.txt`:
 # Enable SPI
 dtparam=spi=on
 
-# Enable MCP2515 CAN controller (Waveshare HAT)
-# For dual-channel HAT:
-dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
-dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
+# For Waveshare 2-CH CAN HAT+ on SPI0 (compatible with X735 UPS):
+dtoverlay=mcp2515,spi0-0,oscillator=16000000,interrupt=22
+dtoverlay=mcp2515,spi0-1,oscillator=16000000,interrupt=13
+
+# Alternative: For SPI1 (default HAT configuration, conflicts with X735):
+# dtoverlay=spi1-3cs
+# dtoverlay=mcp2515,spi1-1,oscillator=16000000,interrupt=22
+# dtoverlay=mcp2515,spi1-2,oscillator=16000000,interrupt=13
 ```
+
+**Note:** If using with Geekworm X735 UPS, you must solder the CAN HAT to use SPI0
+(see X735 Compatibility section below).
 
 Reboot after making changes.
 
@@ -178,7 +185,7 @@ sudo ./rpi_epic_canbus -m inputs --generate-config
 | `-c, --can` | CAN interface | can0 |
 | `-g, --gps` | GPS serial device | /dev/ttyUSB0 |
 | `-i, --i2c` | I2C device for ADC | /dev/i2c-1 |
-| `-p, --gpio` | GPIO chip | /dev/gpiochip4 |
+| `-p, --gpio` | GPIO chip | /dev/gpiochip4 (use /dev/gpiochip10 on Pi 5) |
 | `-m, --mode` | I/O mode | balanced |
 | `--generate-config` | Generate config and exit | - |
 | `-h, --help` | Show help | - |
@@ -249,12 +256,23 @@ GPIO pin assignments depend on the selected I/O mode. All assignments use BCM nu
 ```
 
 ### Reserved GPIOs (do not use)
+
+**For SPI0 configuration (X735 compatible):**
 | GPIO | Function |
 |------|----------|
 | 2, 3 | I2C SDA/SCL (for ADS1115 ADC) |
-| 7, 8 | SPI CE0/CE1 (for CAN HAT) |
-| 9, 10, 11 | SPI MISO/MOSI/SCLK (for CAN HAT) |
-| 24, 25 | CAN HAT interrupt pins |
+| 7, 8 | SPI0 CE1/CE0 (for CAN HAT) |
+| 9, 10, 11 | SPI0 MISO/MOSI/SCLK (for CAN HAT) |
+| 13, 22 | CAN HAT interrupt pins |
+| 4, 17, 18 | X735 UPS power management |
+
+**For SPI1 configuration (default, no X735):**
+| GPIO | Function |
+|------|----------|
+| 2, 3 | I2C SDA/SCL (for ADS1115 ADC) |
+| 16, 17 | SPI1 CE2/CE1 (for CAN HAT) |
+| 19, 20, 21 | SPI1 MISO/MOSI/SCLK (for CAN HAT) |
+| 13, 22 | CAN HAT interrupt pins |
 
 ### Default Pin Assignments (Balanced Mode)
 
@@ -374,6 +392,55 @@ sudo ./rpi_epic_canbus
 | GPIO | Direct port access | libgpiod |
 | VSS | Hardware interrupts | Polling (high-frequency) |
 | PWM | Hardware PWM | Software (on/off only) |
+
+## X735 UPS Compatibility
+
+The Geekworm X735 UPS uses GPIO 4, 17, and 18 for power management. The Waveshare
+2-CH CAN HAT+ uses GPIO 17 (SPI1 CE1) by default, causing a conflict.
+
+### Solution: Solder CAN HAT to use SPI0
+
+Move the 0-ohm resistor solder bridges on the CAN HAT:
+
+| Function | FROM (SPI1) | TO (SPI0) |
+|----------|-------------|-----------|
+| MISO | GPIO 19 | GPIO 9 |
+| MOSI | GPIO 20 | GPIO 10 |
+| SCK | GPIO 21 | GPIO 11 |
+| CS_0 | GPIO 17 | GPIO 8 |
+| CS_1 | GPIO 16 | GPIO 7 |
+
+Interrupt pins (GPIO 22, 13) remain unchanged.
+
+### Stack Order
+
+Pi 5 → X735 → CAN HAT
+
+### config.txt for X735 + CAN HAT
+
+```ini
+dtparam=spi=on
+dtoverlay=mcp2515,spi0-0,oscillator=16000000,interrupt=22
+dtoverlay=mcp2515,spi0-1,oscillator=16000000,interrupt=13
+```
+
+## GPS with gpsd
+
+To share GPS between multiple applications (e.g., TSDash and rpi_epic_canbus):
+
+```bash
+sudo apt install gpsd gpsd-clients
+```
+
+Configure `/etc/default/gpsd`:
+```ini
+DEVICES="/dev/ttyUSB0"
+GPSD_OPTIONS="-n -G"
+START_DAEMON="true"
+USBAUTO="true"
+```
+
+Applications can connect via TCP to `localhost:2947`.
 
 ## License
 
